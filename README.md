@@ -3,16 +3,14 @@
 #### 介绍
 ```
  A_A       _
-o'' )_____//  Cortex-M上的简单RTOS内核，支持抢占式多任务处理
- `_/  MOS  )  MOS <=> Mini-RTOS
+o'' )_____//    Cortex-M上的简单RTOS内核，支持抢占式多任务处理
+ `_/  MOS  )    MOS <=> Mini-RTOS
  (_(_/--(_/
 ```
 
 #### 项目结构
 ```
 | mos/.
-|     | drivers/                硬件设备驱动抽象层(SPL/HAL/...)
-|     |
 |     | arch/.
 |     |      | cpu.hpp          架构相关代码
 |     |
@@ -21,7 +19,6 @@ o'' )_____//  Cortex-M上的简单RTOS内核，支持抢占式多任务处理
 |              | task.hpp       任务创建、阻塞、挂起、终止
 |              | scheduler.hpp  调度器、上下文切换
 |              | sync.hpp       同步原语
-| 
-| main.cpp                      入口函数
+|
 | config.h                      配置系统，设定资源、宏
 ```

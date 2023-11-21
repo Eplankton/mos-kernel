@@ -13,8 +13,6 @@ o'' )_____//    Mini Preemptive RTOS Kernel on Cortex-M
 
 ```
 | mos/.
-|     | drivers/.               Hardware Drivers(SPL/HAL/...)
-|     | 
 |     | arch/. 
 |     |      | cpu.hpp          Arch-related code
 |     | 
@@ -24,6 +22,5 @@ o'' )_____//    Mini Preemptive RTOS Kernel on Cortex-M
 |              | scheduler.hpp  Scheduler
 |              | sync.hpp       Synchronization primitive
 |
-| main.cpp                      Entry point
 | config.h                      System Configuration
 ```
