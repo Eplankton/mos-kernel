@@ -11,7 +11,7 @@ namespace MOS::DataType
 	struct RxBuffer
 	{
 		char raw[N];
-		volatile int index = 0;
+		volatile int32_t index = 0;
 
 		__attribute__((always_inline)) inline auto
 		c_str() const { return raw; }

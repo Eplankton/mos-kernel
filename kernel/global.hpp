@@ -1,5 +1,5 @@
-#ifndef _MOS_GLOBAL_
-#define _MOS_GLOBAL_
+#ifndef _MOS_KERNEL_GLOBAL_
+#define _MOS_KERNEL_GLOBAL_
 
 #include "macro.hpp"
 #include "data_type.hpp"
