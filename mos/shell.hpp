@@ -48,18 +48,7 @@ namespace MOS::Shell
 			auto name = argv;
 			if (*name != '\0') {
 				if (auto tcb = Task::find(name)) {
-					Util::DisIntrGuard guard;
-
-					// for (auto t = tcb; t != nullptr; t = t->get_parent()) {
-					// 	printf("%s", t->get_name());
-					// 	if (t->get_parent() != nullptr) {
-					// 		printf("<-");
-					// 	}
-					// }
-
-					// for (uint32_t i = 0; i < 3; i++) {
-					// 	MOS_MSG("%#x\n", tcb->page->raw[Macro::PAGE_SIZE - i - 1]);
-					// }
+					// todo()
 				}
 				else {
 					MOS_MSG("[MOS]: Unknown task '%s'\n", name);
@@ -127,21 +116,18 @@ namespace MOS::Shell
 
 		CmdCall::uname_cmd(nullptr);
 		Task::print_all_tasks();
-		Task::block();
 
 		while (true) {
 			// Valid input should end with '\n'
 			if (rx_buf.back() == '\n') {
-				// Remove '\n'
 				rx_buf.pop();
-
 				auto rx_str = rx_buf.c_str();
 				MOS_MSG("> %s\n", rx_str);
 				parser(rx_str);
 				rx_buf.clear();
-
-				// After parsing a command, return to sleep
-				Task::block();
+			}
+			else {
+				Task::yield();
 			}
 		}
 	}

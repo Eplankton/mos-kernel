@@ -36,8 +36,7 @@ namespace MOS::Sync
 			if (cnt < 0) {
 				curTCB->set_status(Status_t::BLOCKED);
 				ready_list.send_to(curTCB->node, waiting_list);
-				MOS_ENABLE_IRQ();
-				Task::yield();
+				return Task::yield();
 			}
 		}
 

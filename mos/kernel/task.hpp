@@ -8,10 +8,18 @@
 
 namespace MOS::Task
 {
-	using namespace KernelGlobal;
 	using namespace Util;
-	using DataType::TCB_t;
 
+	using KernelGlobal::curTCB;
+	using KernelGlobal::ready_list;
+	using KernelGlobal::blocked_list;
+	using KernelGlobal::sleep_list;
+	using KernelGlobal::os_ticks;
+	using KernelGlobal::tids;
+	using KernelGlobal::debug_tcbs;
+
+	using TCB_t     = DataType::TCB_t;
+	using List_t    = DataType::List_t;
 	using Fn_t      = TCB_t::Fn_t;
 	using Argv_t    = TCB_t::Argv_t;
 	using Prior_t   = TCB_t::Prior_t;
@@ -26,7 +34,17 @@ namespace MOS::Task
 	current_task() { return curTCB; }
 
 	__attribute__((always_inline)) inline void
-	yield() { MOS_TRIGGER_SYSTICK_INTR(); }
+	yield() { MOS_TRIGGER_PENDSV_INTR(); }
+
+	__attribute__((always_inline)) inline void
+	inc_ticks() { os_ticks += 1; }
+
+	__attribute__((always_inline)) inline auto
+	inc_tids()
+	{
+		tids += 1;
+		return tids;
+	}
 
 	__attribute__((always_inline)) inline uint32_t
 	num() { return debug_tcbs.size(); }
@@ -91,7 +109,7 @@ namespace MOS::Task
 			tcb = TCB_t::build(page, fn, argv, pr, name);
 
 			// Give TID
-			tcb->set_tid(tids++);
+			tcb->set_tid(inc_tids());
 
 			// Setup the stack to hold task context.
 			// Remember it is a descending stack and a context consists of 16 registers.
@@ -134,7 +152,7 @@ namespace MOS::Task
 		return tcb;
 	}
 
-	inline void block(TcbPtr_t tcb = current_task())
+	inline void block_to(TcbPtr_t tcb, List_t& dest)
 	{
 		if (tcb == nullptr || tcb->is_status(Status_t::BLOCKED))
 			return;
@@ -145,12 +163,18 @@ namespace MOS::Task
 		{
 			DisIntrGuard guard;
 			tcb->set_status(Status_t::BLOCKED);
-			ready_list.send_to(tcb->node, blocked_list);
+			ready_list.send_to(tcb->node, dest);
 		}
 
 		if (tcb == current_task()) {
 			yield();
 		}
+	}
+
+	__attribute__((always_inline)) inline void
+	block(TcbPtr_t tcb = current_task())
+	{
+		block_to(tcb, blocked_list);
 	}
 
 	inline void resume(TcbPtr_t tcb)
@@ -171,6 +195,24 @@ namespace MOS::Task
 			// if curTCB isn't the highest priority
 			yield();
 		}
+	}
+
+	// Unsafe version for ISR, not recommended
+	inline void resume_fromISR(TcbPtr_t tcb)
+	{
+		if (tcb == nullptr || !tcb->is_status(Status_t::BLOCKED))
+			return;
+
+		// Assert if irq disabled
+		MOS_ASSERT(test_irq(), "Disabled Interrupt");
+
+		{
+			DisIntrGuard guard;
+			tcb->set_status(Status_t::READY);
+			blocked_list.send_to_in_order(tcb->node, ready_list, TCB_t::priority_cmp);
+		}
+
+		// No yield() here to avoid ContextSwitch in ISR
 	}
 
 	__attribute__((always_inline)) inline void
@@ -205,25 +247,24 @@ namespace MOS::Task
 		TcbPtr_t res = nullptr;
 
 		auto fetch = [info, &res](TcbPtr_t tcb) {
-			if (tcb == nullptr)
-				return;
 			if constexpr (Same<decltype(info), Tid_t>) {
 				if (tcb->get_tid() == info) {
 					res = tcb;
-					return;
+					return true;
 				}
 			}
 
 			if constexpr (Same<decltype(info), Name_t>) {
 				if (Util::strcmp(tcb->get_name(), info) == 0) {
 					res = tcb;
-					return;
+					return true;
 				}
 			}
+
+			return false;
 		};
 
-		for_all_tasks(fetch);
-
+		debug_tcbs.iter_until(fetch);
 		return res;
 	}
 
@@ -250,7 +291,7 @@ namespace MOS::Task
 		}
 	};
 
-	inline void print_task(const Node_t& node,
+	inline void print_task_info(const Node_t& node,
 	                       const char* format = "#%-2d %-10s %-5d %-9s %2d%%\n")
 	{
 		auto& tcb = (TCB_t&) node;
@@ -259,7 +300,7 @@ namespace MOS::Task
 		        tcb.get_name(),
 		        tcb.get_priority(),
 		        status_name(tcb.get_status()),
-		        tcb.page_usage());
+		        tcb.stack_usage());
 	};
 
 	// For debug only
@@ -268,7 +309,7 @@ namespace MOS::Task
 		DisIntrGuard guard;
 		MOS_MSG("-----------------------------------\n");
 		debug_tcbs.iter([](TcbPtr_t tcb) {
-			print_task(tcb->node);
+			print_task_info(tcb->node);
 		});
 		MOS_MSG("-----------------------------------\n");
 	}
@@ -276,8 +317,8 @@ namespace MOS::Task
 	__attribute__((always_inline)) inline void
 	delay(const uint32_t ticks)
 	{
-		curTCB->delay_ticks = os_ticks + ticks;
-		block();
+		curTCB->set_delay_ticks(os_ticks + ticks);
+		block_to(current_task(), sleep_list);
 	}
 }
 
