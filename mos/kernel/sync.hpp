@@ -6,36 +6,35 @@
 namespace MOS::Sync
 {
 	using KernelGlobal::ready_list;
-	using KernelGlobal::blocked_list;
-	using KernelGlobal::curTCB;
-	using Util::DisIntrGuard;
-	using Util::test_irq;
+	using Utils::DisIntrGuard_t;
+	using Utils::test_irq;
 
-	using TCB_t       = DataType::TCB_t;
-	using TcbPtr_t    = TCB_t::TcbPtr_t;
-	using AtomicCnt_t = volatile int32_t;
-	using List_t      = DataType::List_t;
-	using Status_t    = TCB_t::Status_t;
+	using Tcb_t     = DataType::Tcb_t;
+	using TcbList_t = DataType::TcbList_t;
+	using TcbPtr_t  = Tcb_t::TcbPtr_t;
+	using Prior_t   = Tcb_t::Prior_t;
+	using Cnt_t     = volatile int32_t;
+	using Status    = Tcb_t::Status;
 
 	struct Semaphore_t
 	{
-		AtomicCnt_t cnt;
-		List_t waiting_list;
+		Cnt_t cnt;
+		TcbList_t wait_queue;
 
 		// Must set a original value
-		Semaphore_t() = delete;
-		Semaphore_t(int32_t val): cnt(val) {}
+		MOS_INLINE inline Semaphore_t() = delete;
+		MOS_INLINE inline Semaphore_t(int32_t val): cnt(val) {}
 
 		// P
 		void down()
 		{
 			// Assert if irq disabled
 			MOS_ASSERT(test_irq(), "Disabled Interrupt");
-			DisIntrGuard guard;
+			DisIntrGuard_t guard;
 			cnt -= 1;
 			if (cnt < 0) {
-				curTCB->set_status(Status_t::BLOCKED);
-				ready_list.send_to(curTCB->node, waiting_list);
+				Task::current()->set_status(Status::BLOCKED);
+				ready_list.send_to(Task::current(), wait_queue);
 				return Task::yield();
 			}
 		}
@@ -45,14 +44,15 @@ namespace MOS::Sync
 		{
 			// Assert if irq disabled
 			MOS_ASSERT(test_irq(), "Disabled Interrupt");
-			DisIntrGuard guard;
+			DisIntrGuard_t guard;
 			if (cnt < 0) {
-				auto& tcb = (TCB_t&) *waiting_list.begin();
-				tcb.set_status(Status_t::READY);
-				waiting_list.send_to_in_order(tcb.node, ready_list, TCB_t::priority_cmp);
+				auto tcb = wait_queue.begin();
+				tcb->set_status(Status::READY);
+				wait_queue.send_to_in_order(
+				        tcb, ready_list, Tcb_t::pri_cmp);
 			}
 			cnt += 1;
-			if (curTCB != (TcbPtr_t) ready_list.begin()) {
+			if (Task::higher_exists()) {
 				return Task::yield();
 			}
 		}
@@ -63,20 +63,20 @@ namespace MOS::Sync
 		Semaphore_t sema;
 		TcbPtr_t owner;
 
-		Lock_t(): owner(nullptr), sema(1) {}
+		MOS_INLINE inline Lock_t(): owner(nullptr), sema(1) {}
 
-		__attribute__((always_inline)) inline void
+		MOS_INLINE inline void
 		acquire()
 		{
-			MOS_ASSERT(owner != Task::current_task(), "Non-recursive lock");
-			owner = Task::current_task();
+			MOS_ASSERT(owner != Task::current(), "Non-recursive lock");
+			owner = Task::current();
 			sema.down();
 		}
 
-		__attribute__((always_inline)) inline void
+		MOS_INLINE inline void
 		release()
 		{
-			MOS_ASSERT(owner == Task::current_task(),
+			MOS_ASSERT(owner == Task::current(),
 			           "Lock can only be released by holder");
 			sema.up();
 			owner = nullptr;
@@ -85,124 +85,273 @@ namespace MOS::Sync
 
 	struct MutexImpl_t
 	{
-		using Prior_t = TCB_t::Prior_t;
+		Semaphore_t sema = 1;
+		Cnt_t recr_cnt   = 0;
+		TcbPtr_t owner   = nullptr;
+		Prior_t ceiling  = Macro::PRI_MIN;
 
-		Semaphore_t sema;
-		TcbPtr_t owner;
-		Prior_t old_pr;
-		Prior_t ceiling;
-		AtomicCnt_t recursive_cnt;
+		MOS_INLINE inline void
+		raise_all_pri()
+		{
+			sema.wait_queue.iter_mut([&](Tcb_t& tcb) {
+				tcb.set_pri(ceiling);
+			});
+		}
 
-		MutexImpl_t(Prior_t ceiling = Macro::PRI_MAX)
-		    : sema(1), owner(nullptr), old_pr(-1), recursive_cnt(0), ceiling(ceiling) {}
+		MOS_INLINE inline void
+		find_new_ceiling()
+		{
+			sema.wait_queue.iter_mut([&](const Tcb_t& tcb) {
+				if (tcb.old_pr != Macro::PRI_NONE &&
+				    tcb.old_pr < ceiling) {
+					ceiling = tcb.old_pr;
+				}
+			});
+		}
 
-		void lock()// P
+		void lock() // P-opr
 		{
 			MOS_ASSERT(test_irq(), "Disabled Interrupt");
 
-			DisIntrGuard guard;
+			DisIntrGuard_t guard;
 
-			if (owner == curTCB) {
-				// If the current task already owns the lock, just increment the lock count
-				recursive_cnt += 1;
+			auto cur = Task::current();
+
+			if (owner == cur) {
+				// If task already owns the lock, just increment the recursive count
+				recr_cnt += 1;
 				return;
 			}
 
-			// Raise the priority of the current task to the ceiling of the mutex
-			old_pr = curTCB->get_priority();
-			if (ceiling < curTCB->get_priority()) {
-				curTCB->set_priority(ceiling);
+			// Compare priority with ceiling
+			if (ceiling < cur->get_pri()) {
+				// Temporarily raise the priority
+				cur->old_pr = cur->get_pri();
+				cur->set_pri(ceiling);
+			}
+			else {
+				// If current priority is higher, set it as the new ceiling
+				ceiling = cur->get_pri();
+				// Raise the priority of all waiting tasks
+				raise_all_pri();
 			}
 
 			sema.cnt -= 1;
 
 			if (sema.cnt < 0) {
-				curTCB->set_status(Status_t::BLOCKED);
-				ready_list.send_to_in_order(curTCB->node, sema.waiting_list, TCB_t::priority_cmp);
+				cur->set_status(Status::BLOCKED);
+				ready_list.send_to(cur, sema.wait_queue);
 				return Task::yield();
 			}
 			else {
-				owner = curTCB;
-				recursive_cnt += 1;
+				owner = Task::current();
+				recr_cnt += 1;
 			}
 		}
 
-		void unlock()// V
+		void unlock() // V-opr
 		{
 			MOS_ASSERT(test_irq(), "Disabled Interrupt");
-			MOS_ASSERT(owner == curTCB, "Lock can only be released by holder");
+			MOS_ASSERT(owner == Task::current(),
+			           "Lock can only be released by holder");
 
-			DisIntrGuard guard;
-			recursive_cnt -= 1;
+			DisIntrGuard_t guard;
+			recr_cnt -= 1;
 
-			if (recursive_cnt > 0) {
-				// If the lock is still held by the current task, just return
+			if (recr_cnt > 0) {
+				// If the lock is still held by the owner
 				return;
 			}
 
-			if (!sema.waiting_list.empty()) {
-
-				auto st = sema.waiting_list.begin(),
-				     ed = sema.waiting_list.end();
-
+			if (!sema.wait_queue.empty()) {
 				// Starvation Prevention
-				for (; st != ed; st = st->next) {
-					if (st->next == ed || !TCB_t::priority_equal(*st, *st->next)) {
-						break;
-					}
-				}
-
-				auto tcb = (TcbPtr_t) st;
-				tcb->set_status(Status_t::READY);
-
-				sema.waiting_list.send_to_in_order(tcb->node, ready_list, TCB_t::priority_cmp);
+				auto tcb = sema.wait_queue.begin();
+				tcb->set_status(Status::READY);
+				sema.wait_queue.send_to_in_order(
+				        tcb,
+				        ready_list,
+				        Tcb_t::pri_cmp);
 
 				// Transfer ownership to the last highest priority task in queue
 				owner = tcb;
 				sema.cnt += 1;
 
-				if (curTCB != (TcbPtr_t) ready_list.begin()) {
+				find_new_ceiling();
+
+				if (Task::higher_exists()) {
 					return Task::yield();
 				}
 			}
 			else {
+				// Restore the original priority of the owner
+				if (recr_cnt == 0 && owner->old_pr != Macro::PRI_NONE) {
+					// Restore the original priority
+					owner->set_pri(owner->old_pr);
+					owner->old_pr = Macro::PRI_NONE;
+				}
+
 				// No owner if no tasks are waiting
 				owner = nullptr;
 				sema.cnt += 1;
-			}
 
-			// Restore the original priority of the owner
-			if (recursive_cnt == 0 && old_pr != -1) {
-				owner->set_priority(old_pr);
-				old_pr = -1;
+				// Reset the ceiling to the lowest priority
+				ceiling = Macro::PRI_MIN;
+
+				return;
 			}
+		}
+
+		MOS_INLINE inline auto
+		exec(auto&& section) // To safely execute
+		{
+			lock();
+			section();
+			unlock();
 		}
 	};
 
-	// template <typename T = void>
-	// struct Mutex_t : public MutexImpl_t
-	// {
-	// 	T raw;
+	template <typename T = void>
+	struct Mutex_t : private MutexImpl_t
+	{
+		using Raw_t    = T;
+		using RawRef_t = Raw_t&;
 
-	// 	T& get()
-	// 	{
-	// 		lock();
-	// 		unlock();
-	// 		return raw;
-	// 	}
+		struct MutexGuard_t
+		{
+			// Unlock when scope ends
+			MOS_INLINE inline ~MutexGuard_t() { mutex.unlock(); }
+			MOS_INLINE inline MutexGuard_t(Mutex_t<T>& mutex)
+			    : mutex(mutex) { mutex.MutexImpl_t::lock(); }
 
-	// 	const T& get() const
-	// 	{
-	// 		lock();
-	// 		unlock();
-	// 		return raw;
-	// 	}
-	// };
+			// Raw Accessor
+			MOS_INLINE inline RawRef_t get() { return mutex.raw; }
+			MOS_INLINE inline RawRef_t operator*() { return get(); }
 
-	// template <>
-	// struct Mutex_t<void> : public MutexImpl_t
-	// {
-	// };
+		private:
+			Mutex_t<Raw_t>& mutex;
+		};
+
+		MOS_INLINE inline Mutex_t(T raw): raw(raw) {}
+
+		MOS_INLINE inline auto
+		lock() { return MutexGuard_t {*this}; }
+
+		MOS_INLINE inline auto
+		exec(auto&& section) // To safely execute
+		{
+			auto guard = lock();
+			return section();
+		}
+
+	private:
+		Raw_t raw;
+	};
+
+	template <>
+	struct Mutex_t<> : private MutexImpl_t
+	{
+		struct MutexGuard_t // No Raw Accessor for T=void
+		{
+			// Unlock when scope ends
+			MOS_INLINE inline ~MutexGuard_t() { mutex.unlock(); }
+			MOS_INLINE inline MutexGuard_t(Mutex_t& mutex)
+			    : mutex(mutex) { mutex.MutexImpl_t::lock(); }
+
+		private:
+			Mutex_t& mutex;
+		};
+
+		MOS_INLINE inline Mutex_t() = default;
+		MOS_INLINE inline auto
+		lock() { return MutexGuard_t {*this}; }
+
+		MOS_INLINE inline auto
+		exec(auto&& section) // To safely execute
+		{
+			auto guard = lock(); // scope begins
+			return section();    // scope ends
+		}
+	};
+
+	// Template deduction where T = void
+	Mutex_t() -> Mutex_t<void>;
+
+	template <typename T>
+	Mutex_t(T&&) -> Mutex_t<T>;
+
+	template <typename T>
+	Mutex_t(T&) -> Mutex_t<T&>;
+
+	struct Cond_t
+	{
+		using Mtx_t = MutexImpl_t;
+
+		inline void wait(Mtx_t& mtx)
+		{
+			mtx.unlock();
+			auto cur = Task::current();
+			cur->set_status(Status::BLOCKED);
+			ready_list.send_to(cur, wait_queue);
+			Task::yield();
+			mtx.lock();
+		}
+
+		inline void wake_up_one()
+		{
+			auto tcb = wait_queue.begin();
+			tcb->set_status(Status::READY);
+			wait_queue.send_to_in_order(
+			        tcb,
+			        ready_list,
+			        Tcb_t::pri_cmp);
+		}
+
+		inline void signal()
+		{
+			if (!wait_queue.empty()) {
+				wake_up_one();
+			}
+		}
+
+		inline void broadcast() // Notify all
+		{
+			while (!wait_queue.empty()) {
+				wake_up_one();
+			}
+		}
+
+	private:
+		TcbList_t wait_queue;
+	};
+
+	struct Barrier_t
+	{
+		using Cnt_t = volatile uint32_t;
+		using Mtx_t = MutexImpl_t;
+
+		Mtx_t mtx;
+		Cond_t cond;
+		Cnt_t total, cnt = 0;
+
+		MOS_INLINE inline Barrier_t(uint32_t num)
+		    : total(num) {}
+
+		inline void wait()
+		{
+			mtx.exec([&] {
+				cnt += 1;
+				if (cnt == total) {
+					cond.broadcast();
+				}
+				else {
+					while (cnt != total) {
+						cond.wait(mtx);
+					}
+				}
+			});
+		}
+	};
+
 }
 
 #endif

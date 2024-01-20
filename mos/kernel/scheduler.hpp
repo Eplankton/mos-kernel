@@ -6,9 +6,12 @@
 
 namespace MOS::Scheduler
 {
-	using namespace Task;
 	using namespace KernelGlobal;
-	using Status_t = TCB_t::Status_t;
+
+	using TcbPtr_t = Tcb_t::TcbPtr_t;
+	using Node_t   = Tcb_t::Node_t;
+	using Fn_t     = Tcb_t::Fn_t;
+	using Status   = Tcb_t::Status;
 
 	enum class Policy
 	{
@@ -16,93 +19,111 @@ namespace MOS::Scheduler
 		PreemptivePriority,
 	};
 
-	__attribute__((naked)) inline void init()
+	enum class SchedStatus
+	{
+		READY,
+		ERROR,
+	} static os_status = SchedStatus::ERROR;
+
+	MOS_INLINE inline bool
+	is_ready() { return os_status == SchedStatus::READY; }
+
+	// This will execute only once for the first task
+	__attribute__((naked)) inline void
+	init()
 	{
 		asm volatile(ARCH_INIT_ASM);
 	}
 
+	// Don't change this name which used in asm("")
 	extern "C" __attribute__((naked, used)) inline void
-	ContextSwitch(void)
+	context_switch(void)
 	{
 		asm volatile(ARCH_CONTEXT_SWITCH_ASM);
 	}
 
-	// Called only once
-	static inline void launch()
+	// Called only once to start scheduling
+	static inline void
+	launch(Fn_t hook = nullptr)
 	{
+		// Default idle can be replaced by user-defined hook
 		auto idle = [](void* argv) {
 			while (true) {
-				// nothing but loop...
 				asm volatile("");
 			}
 		};
 
-		Task::create(idle, nullptr, Macro::PRI_MIN, "idle");
-		curTCB = (TcbPtr_t) ready_list.begin();
-		curTCB->set_status(Status_t::RUNNING);
+		// Create idle task with hook
+		Task::create(
+		        hook == nullptr ? idle : hook,
+		        nullptr,
+		        Macro::PRI_MIN,
+		        "idle");
+
+		cur_tcb = ready_list.begin();
+		cur_tcb->set_status(Status::RUNNING);
+		os_status = SchedStatus::READY;
 		init();
 	}
 
 	static inline void try_wake_up()
 	{
-		TcbPtr_t to_wake = nullptr;
-
-		sleep_list.iter_until([&to_wake](const Node_t& node) {
-			auto& tcb = (TCB_t&) node;
-			if (tcb.delay_ticks <= os_ticks) {
-				tcb.delay_ticks = 0;
-				to_wake         = &tcb;
-				return true;
-			}
-			return false;
-		});
-
-		if (to_wake != nullptr) {
-			to_wake->set_status(Status_t::READY);
-			sleep_list.send_to_in_order(to_wake->node, ready_list, TCB_t::priority_cmp);
+		// Only have to check the first one since they're sorted by delay_ticks
+		auto to_wake = sleep_list.begin();
+		if (to_wake->delay_ticks <= os_ticks) {
+			to_wake->set_delay(0);
+			to_wake->set_status(Status::READY);
+			sleep_list.send_to_in_order(
+			        to_wake,
+			        ready_list,
+			        Tcb_t::pri_cmp);
 		}
 	}
 
-	// Custom Scheduler Policy
 	template <Policy policy>
 	static inline void next_tcb()
 	{
-		if (!sleep_list.empty())
-			try_wake_up();
-
 		static auto switch_to = [](TcbPtr_t tcb) {
-			tcb->set_status(Status_t::RUNNING);
-			curTCB = tcb;
+			tcb->set_status(Status::RUNNING);
+			cur_tcb = tcb;
 		};
 
-		auto st = (TcbPtr_t) ready_list.begin(),
-		     ed = (TcbPtr_t) ready_list.end(),
-		     nx = (TcbPtr_t) curTCB->next();
+		if (!sleep_list.empty()) {
+			try_wake_up();
+		}
 
-		if (curTCB->is_status(Status_t::TERMINATED) ||
-		    curTCB->is_status(Status_t::BLOCKED)) {
-			// curTCB has been removed from ready_list
+		auto st = ready_list.begin(),
+		     ed = ready_list.end(),
+		     cr = Task::current(),
+		     nx = cr->next();
+
+		if (cr->is_status(Status::TERMINATED) ||
+		    cr->is_status(Status::BLOCKED))
+		{
+			// cur_tcb has been removed from ready_list
 			return switch_to(st);
 		}
 
 		if constexpr (policy == Policy::RoundRobin) {
-			if (--curTCB->time_slice <= 0) {
-				curTCB->set_status(Status_t::READY);
-				curTCB->time_slice = Macro::TIME_SLICE;
+			if (cr->time_slice <= 0) {
+				cr->time_slice = Macro::TIME_SLICE;
+				cr->set_status(Status::READY);
 				return switch_to((nx == ed) ? st : nx);
 			}
 		}
 
 		if constexpr (policy == Policy::PreemptivePriority) {
-			if (TCB_t::priority_cmp(st->node, curTCB->node)) {
-				curTCB->set_status(Status_t::READY);
+			// If there's a task with higher priority
+			if (Tcb_t::pri_cmp(st, cr)) {
+				cr->set_status(Status::READY);
 				return switch_to(st);
 			}
 
-			if (--curTCB->time_slice <= 0) {
-				curTCB->set_status(Status_t::READY);
-				curTCB->time_slice = Macro::TIME_SLICE;
-				if (nx != ed && TCB_t::priority_equal(nx->node, curTCB->node)) {
+			if (cr->time_slice <= 0) {
+				cr->time_slice = Macro::TIME_SLICE;
+				cr->set_status(Status::READY);
+				// RoundRobin under same priority
+				if (nx != ed && Tcb_t::pri_equal(nx, cr)) {
 					return switch_to(nx);
 				}
 				else {
@@ -112,8 +133,9 @@ namespace MOS::Scheduler
 		}
 	}
 
+	// Don't change this function name used in asm("")
 	extern "C" __attribute__((used, always_inline)) inline void
-	nextTCB()// Don't change this name which used in asm("")
+	next_tcb()
 	{
 		next_tcb<Policy::MOS_CONF_POLICY>();
 	}
@@ -121,19 +143,22 @@ namespace MOS::Scheduler
 
 namespace MOS::ISR
 {
-	using Util::DisIntrGuard;
+	using Utils::DisIntrGuard_t;
 
 	extern "C" __attribute__((naked)) void
-	PendSV_Handler()
+	MOS_PENDSV_HANDLER()
 	{
-		asm volatile("B    ContextSwitch");
+		asm volatile(ARCH_JUMP_TO_CONTEXT_SWITCH);
 	}
 
-	extern "C" void SysTick_Handler()
+	extern "C" void
+	MOS_SYSTICK_HANDLER()
 	{
-		DisIntrGuard guard;
+		DisIntrGuard_t guard;
 		Task::inc_ticks();
-		Task::yield();
+		if (Scheduler::is_ready()) {
+			Task::nop_and_yield();
+		}
 	}
 }
 

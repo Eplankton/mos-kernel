@@ -15,18 +15,21 @@ namespace MOS::KernelGlobal
 	using namespace Macro;
 	using namespace DataType;
 
-	Page_t page_pool[MAX_TASK_NUM];
-	List_t ready_list, blocked_list, sleep_list;
-	TCB_t::Tid_t tids = 0;
-	RxBuffer<32> rx_buf;
+	using Tid_t    = Tcb_t::Tid_t;
+	using Tick_t   = Tcb_t::Tick_t;
+	using TcbPtr_t = Tcb_t::TcbPtr_t;
 
-	// Put it in extern "C" because the name is referred in asm("") and don't change it.
-	// At anytime, the curTCB points to task running currently.
-	MOS_DEBUG_INFO TCB_t::TcbPtr_t curTCB = nullptr;
-	MOS_DEBUG_INFO TCB_t::Tick_t os_ticks = 0;
+	Tid_t tids = -1;
+	Page_t page_pool[MAX_TASK_NUM];
+	TcbList_t ready_list, blocked_list, sleep_list;
+
+	// Put it in `extern "C"` because the name is referred in `asm("")` and don't change it.
+	// At anytime, the `cur_tcb` should point to the task running currently.
+	MOS_DEBUG_INFO TcbPtr_t cur_tcb = nullptr;
+	MOS_DEBUG_INFO Tick_t os_ticks  = 0;
 
 	// For debug only
-	MOS_DEBUG_INFO DebugTasks debug_tcbs {};
+	MOS_DEBUG_INFO DebugTcbs_t debug_tcbs {};
 }
 
 #endif

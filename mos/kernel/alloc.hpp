@@ -19,7 +19,6 @@ namespace MOS::Alloc
 			}
 		}
 
-		MOS_ASSERT(false, "Page Alloc Error");
 		return nullptr;
 	}
 }
