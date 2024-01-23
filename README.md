@@ -21,7 +21,7 @@ mos
 ├── kernel               Kernel(Arch-independent)
 │   ├── macro.hpp        Configured Macros
 │   ├── type.hpp         Basic Types
-│   ├── concepts.hpp     C++20 Concepts(Optional)
+│   ├── concepts.hpp     Type Constraints(Optional)
 │   ├── data_type.hpp    Basic Data Structures
 │   ├── alloc.hpp        Static/Dynamic Allocator
 │   ├── global.hpp       Kernel Globals
