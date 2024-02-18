@@ -6,30 +6,41 @@
 
 namespace MOS::Scheduler
 {
-	using namespace KernelGlobal;
+	enum class SchedStatus : bool
+	{
+		OK  = true,
+		ERR = !OK,
+	} static sched_status = SchedStatus::ERR;
 
-	using TcbPtr_t = Tcb_t::TcbPtr_t;
-	using Node_t   = Tcb_t::Node_t;
-	using Fn_t     = Tcb_t::Fn_t;
-	using Status   = Tcb_t::Status;
-
-	enum class Policy
+	enum class Policy : int8_t
 	{
 		RoundRobin,
-		PreemptivePriority,
+
+		// In this policy, a task with a higher priority can preempt currently running task,
+		// `TCB_t::pri_cmp(st, cr)` compares the priority of the new task `st` with the currently running task `cr`.
+		// If `st` has higher priority, the current task `cr` will be set to `READY` status and switched to `st`.
+		// If the `time slice` of the current task `cr` is exhausted (i.e., `cr->time_slice <= 0`),
+		// the `time_slice` will be reset to `TIME_SLICE`, and switched to the next.
+		// If there are other tasks with the same priority as `cr` that are ready
+		// to run (i.e., `nx != ed && TCB_t::pri_equal(nx, cr)`),
+		// the scheduler will perform `RoundRobin` scheduling among these tasks (so called a `PriGroup`).
+		// Otherwise, the scheduler switches back to `st` with the highest priority.
+		PreemptPri,
 	};
 
-	enum class OpStatus
-	{
-		READY = true,
-		ERROR = !READY,
-	} static os_status = OpStatus::ERROR;
+	using namespace Macro;
+	using namespace KernelGlobal;
 
+	using DataType::TCB_t;
+	using TcbPtr_t = TCB_t::TcbPtr_t;
+	using Fn_t     = TCB_t::Fn_t;
+
+	using enum TCB_t::Status;
+	using enum SchedStatus;
 	using enum Policy;
-	using enum OpStatus;
 
 	MOS_INLINE inline bool
-	is_ready() { return os_status == READY; }
+	is_ok() { return sched_status == SchedStatus::OK; }
 
 	// This will execute only once for the first task
 	__attribute__((naked)) inline void
@@ -45,7 +56,7 @@ namespace MOS::Scheduler
 		asm volatile(ARCH_CONTEXT_SWITCH_ASM);
 	}
 
-	// Called only once to start scheduling
+	// Start scheduling
 	static inline void
 	launch(Fn_t hook = nullptr)
 	{
@@ -58,75 +69,77 @@ namespace MOS::Scheduler
 
 		// Create idle task with hook
 		Task::create(
-		        hook == nullptr ? idle : hook,
-		        nullptr,
-		        PRI_MIN,
-		        "idle");
+		    hook ? hook : idle,
+		    nullptr,
+		    PRI_MIN,
+		    "idle"
+		);
+
+		MOS_ASSERT(!ready_list.empty(), "Launch Failed!");
 
 		cur_tcb = ready_list.begin();
-		cur_tcb->set_status(Status::RUNNING);
-		os_status = READY;
+		cur_tcb->set_status(RUNNING);
+
+		debug_tcbs.mark(cur_tcb); // For debug only
+		sched_status = SchedStatus::OK;
+
 		init();
 	}
 
-	static inline void try_wake_up()
+	static inline void
+	try_wake_up()
 	{
-		// Only have to check the first one since they're sorted by delay_ticks
-		auto to_wake = sleeping_list.begin();
-		if (to_wake->delay_ticks <= os_ticks) {
-			to_wake->set_delay(0);
-			to_wake->set_status(Status::READY);
-			sleeping_list.send_to_in_order(
-			        to_wake,
-			        ready_list,
-			        Tcb_t::pri_cmp);
+		// sleeping_list is sorted
+		auto tcb = sleeping_list.begin();
+		while (tcb != sleeping_list.end()) {
+			if (tcb->get_wkpt() > os_ticks)
+				return;
+			Task::wake_raw(tcb);
+			tcb = sleeping_list.begin(); // check next
 		}
 	}
 
 	template <Policy policy>
 	static inline void next_tcb()
 	{
-		static auto switch_to = [](TcbPtr_t tcb) {
-			tcb->set_status(Status::RUNNING);
+		auto switch_to = [](TcbPtr_t tcb) {
+			tcb->set_status(RUNNING);
 			cur_tcb = tcb;
+			debug_tcbs.mark(cur_tcb); // For debug only
 		};
 
-		if (!sleeping_list.empty()) {
-			try_wake_up();
-		}
+		try_wake_up();
 
 		auto st = ready_list.begin(),
 		     ed = ready_list.end(),
 		     cr = Task::current(),
 		     nx = cr->next();
 
-		if (cr->is_status(Status::TERMINATED) ||
-		    cr->is_status(Status::BLOCKED))
-		{
-			// cur_tcb has been removed from ready_list
+		if (cr->is_status(TERMINATED) ||
+		    cr->is_status(BLOCKED)) {
 			return switch_to(st);
 		}
 
 		if constexpr (policy == RoundRobin) {
 			if (cr->time_slice <= 0) {
 				cr->time_slice = TIME_SLICE;
-				cr->set_status(Status::READY);
-				return switch_to((nx == ed) ? st : nx);
+				cr->set_status(READY);
+				return switch_to(nx == ed ? st : nx);
 			}
 		}
 
-		if constexpr (policy == PreemptivePriority) {
+		if constexpr (policy == PreemptPri) {
 			// If there's a task with higher priority
-			if (Tcb_t::pri_cmp(st, cr)) {
-				cr->set_status(Status::READY);
+			if (TCB_t::pri_cmp(st, cr)) {
+				cr->set_status(READY);
 				return switch_to(st);
 			}
 
 			if (cr->time_slice <= 0) {
 				cr->time_slice = TIME_SLICE;
-				cr->set_status(Status::READY);
+				cr->set_status(READY);
 				// RoundRobin under same priority
-				if (nx != ed && Tcb_t::pri_equal(nx, cr)) {
+				if (nx != ed && TCB_t::pri_equal(nx, cr)) {
 					return switch_to(nx);
 				}
 				else {
@@ -140,7 +153,7 @@ namespace MOS::Scheduler
 	extern "C" __attribute__((used, always_inline)) inline void
 	next_tcb()
 	{
-		next_tcb<Policy::MOS_CONF_POLICY>();
+		next_tcb<Policy::MOS_CONF_SCHED_POLICY>();
 	}
 }
 
@@ -159,8 +172,8 @@ namespace MOS::ISR
 	{
 		DisIntrGuard_t guard;
 		Task::inc_ticks();
-		if (Scheduler::is_ready()) {
-			Task::nop_and_yield();
+		if (Scheduler::is_ok()) {
+			return Task::nop_and_yield();
 		}
 	}
 }

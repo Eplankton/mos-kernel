@@ -11,24 +11,27 @@ o'' )_____//    [MOS-Kernel]
 ### Repository 📦
 [Gitee](https://gitee.com/Eplankton/mos-kernel) | [GitHub](https://github.com/Eplankton/mos-kernel) 
 
-### Structure 🏀
+### Architecture 🏀
+<img src="mos-arch.svg">
+
 ```
 mos
 ├── config.h             System Configuration
 ├── arch                 Arch-related
-│   └── cpu.hpp          ASM of ContextSwitch
+│   └── cpu.hpp          asm for context_switch
 │
 ├── kernel               Kernel(Arch-independent)
-│   ├── macro.hpp        Configured Macros
+│   ├── macro.hpp        Kernel Constant Macros
 │   ├── type.hpp         Basic Types
 │   ├── concepts.hpp     Type Constraints(Optional)
 │   ├── data_type.hpp    Basic Data Structures
 │   ├── alloc.hpp        Static/Dynamic Allocator
 │   ├── global.hpp       Kernel Globals
 │   ├── printf.c         Thread-safe printf
-│   ├── task.hpp         Task create, yield, terminate, block...
+│   ├── task.hpp         Task control
 │   ├── sync.hpp         Sync primitives
 │   ├── scheduler.hpp    Scheduler and Policy
+│   ├── ipc.hpp          Inter-Process Communication
 │   └── utils.hpp        Utils
 │
 ├── kernel.hpp           Import Kernel Modules

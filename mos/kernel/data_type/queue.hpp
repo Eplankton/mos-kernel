@@ -7,8 +7,12 @@ namespace MOS::DataType
 {
 	class QueueImpl_t
 	{
+		using Len_t = volatile uint32_t;
+
 	protected:
-		uint32_t m_len = 0, m_head = 0, m_tail = 0;
+		Len_t m_len  = 0,
+		      m_head = 0,
+		      m_tail = 0;
 
 		MOS_INLINE inline void*
 		front(void* src, const uint32_t size) volatile
@@ -42,10 +46,17 @@ namespace MOS::DataType
 		}
 
 	public:
-		MOS_INLINE inline uint32_t size() const volatile { return m_len; }
-		MOS_INLINE inline bool full() const volatile { return m_len != 0 && m_head == m_tail; }
-		MOS_INLINE inline bool empty() const volatile { return m_len == 0; }
-		MOS_INLINE inline void clear() volatile { m_head = m_tail = m_len = 0; }
+		MOS_INLINE inline uint32_t
+		size() const volatile { return m_len; }
+
+		MOS_INLINE inline bool
+		full() const volatile { return m_len != 0 && m_head == m_tail; }
+
+		MOS_INLINE inline bool
+		empty() const volatile { return m_len == 0; }
+
+		MOS_INLINE inline void
+		clear() volatile { m_head = m_tail = m_len = 0; }
 	};
 
 	template <typename T, uint32_t N, typename Base = QueueImpl_t>
@@ -56,8 +67,6 @@ namespace MOS::DataType
 		using Base::back;
 		using Base::push;
 		using Base::pop;
-		using Base::m_tail;
-		using Base::m_head;
 
 		using value_type = T;
 		using value_ptr  = T*;
@@ -74,7 +83,8 @@ namespace MOS::DataType
 		Queue_t()  = default;
 		~Queue_t() = default;
 
-		static inline constexpr uint32_t capacity() { return N; }
+		static inline constexpr uint32_t
+		capacity() { return N; }
 
 		MOS_INLINE inline auto
 		data() const volatile { return m_data; }
@@ -96,37 +106,45 @@ namespace MOS::DataType
 		MOS_INLINE inline void
 		push(const T& val) volatile
 		{
-			push((void*) (m_data + m_tail), (void*) &val, sizeof(T), N);
+			push(
+			    (void*) (m_data + this->m_tail),
+			    (void*) &val,
+			    sizeof(T),
+			    N
+			);
 		}
 
-		inline value_ref serve() volatile
+		inline value_type
+		serve() volatile
 		{
-			auto& tmp = front();
+			auto tmp = front();
 			pop();
 			return tmp;
 		}
 
-		inline void iter(auto&& fn) volatile
+		inline void
+		iter(auto&& fn) const volatile
 		{
 			if (empty()) return;
 			else {
-				auto i = m_head;
+				auto i = this->m_head;
 				do {
 					fn(m_data[i]);
 					i = (i + 1) % N;
-				} while (i != m_tail);
+				} while (i != this->m_tail);
 			}
 		}
 
-		inline void iter(auto&& fn) const volatile
+		inline void
+		iter_mut(auto&& fn) volatile
 		{
 			if (empty()) return;
 			else {
-				auto i = m_head;
+				auto i = this->m_head;
 				do {
 					fn(m_data[i]);
 					i = (i + 1) % N;
-				} while (i != m_tail);
+				} while (i != this->m_tail);
 			}
 		}
 	};

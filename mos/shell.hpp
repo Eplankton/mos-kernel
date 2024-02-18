@@ -1,9 +1,9 @@
 //////////////////////////////////////////////////////////////////////////
-//                          The MOS Shell
-//                  Eplankton (wikechao@gmail.com)
-//                   https://github.com/Eplankton
-//               East China Normal University, Shanghai
-//                  The Apache License, Version 2.0
+//                          The MOS Shell                               //
+//                  Eplankton (wikechao@gmail.com)                      //
+//                   https://github.com/Eplankton                       //
+//               East China Normal University, Shanghai                 //
+//                  The Apache License, Version 2.0                     //
 //////////////////////////////////////////////////////////////////////////
 
 #ifndef _MOS_SHELL_
@@ -11,6 +11,7 @@
 
 #include "kernel/utils.hpp"
 #include "kernel/task.hpp"
+#include "kernel/data_type/buffer.hpp"
 
 namespace MOS::Shell
 {
@@ -46,7 +47,8 @@ namespace MOS::Shell
 
 			// Check whether match or not
 			auto check = [&](Text_t str) {
-				return (str[xlen] == ' ' || str[xlen] == '\0') &&
+				return (str[xlen] == ' ' ||
+				        str[xlen] == '\0') &&
 				       strncmp(str, text, xlen) == 0;
 			};
 
@@ -74,7 +76,7 @@ namespace MOS::Shell
 					// todo!()
 				}
 				else {
-					MOS_MSG("Unknown task '%s'\n", name);
+					MOS_MSG("Unknown task '%s'", name);
 				}
 			}
 			else { // No arguments provided
@@ -88,14 +90,14 @@ namespace MOS::Shell
 			if (*name != '\0') {
 				if (auto tcb = Task::find(name)) {
 					Task::terminate(tcb);
-					MOS_MSG("Task '%s' terminated\n", name);
+					MOS_MSG("Task '%s' terminated", name);
 				}
 				else {
-					MOS_MSG("Unknown task '%s'\n", name);
+					MOS_MSG("Unknown task '%s'", name);
 				}
 			}
 			else {
-				MOS_MSG("Invalid Arguments\n");
+				MOS_MSG("Invalid Arguments");
 			}
 		}
 
@@ -105,69 +107,65 @@ namespace MOS::Shell
 				Task::resume(tcb);
 			}
 			else {
-				MOS_MSG("No Calendar found!\n");
+				MOS_MSG("Calendar not found!");
 			}
 		}
 
 		static inline void uname_cmd(Argv_t argv)
 		{
 			DisIntrGuard_t guard;
-			kprintf(" A_A       _\n"
-			        "o'' )_____//  Version @ %s\n"
-			        " `_/  MOS  )  Build   @ %s, %s\n"
-			        " (_(_/--(_/   Chip    @ %s, %s\n",
-			        MOS_VERSION,
-			        __TIME__, __DATE__,
-			        MOS_MCU, MOS_ARCH);
+			kprintf(
+			    " A_A       _\n"
+			    "o'' )_____//  Version @ %s\n"
+			    " `_/  MOS  )  Build   @ %s, %s\n"
+			    " (_(_/--(_/   Chip    @ %s, %s\n",
+			    MOS_VERSION,
+			    __TIME__, __DATE__,
+			    MOS_MCU, MOS_ARCH
+			);
 		}
 
 		static inline void reboot_cmd(Argv_t argv)
 		{
-			MOS_MSG("Reboot!\n\n\n");
+			MOS_MSG("Reboot!\n\n");
 			MOS_REBOOT();
 		}
 	}
 
 	// Add more commands here with {"text", CmdCall::callback}
 	static constexpr Command_t cmds[] = {
-	        {    "ls",     CmdCall::ls_cmd},
-	        {  "kill",   CmdCall::kill_cmd},
-	        {  "date",   CmdCall::date_cmd},
-	        { "uname",  CmdCall::uname_cmd},
-	        {"reboot", CmdCall::reboot_cmd},
+	    {    "ls",     CmdCall::ls_cmd},
+	    {  "kill",   CmdCall::kill_cmd},
+	    {  "date",   CmdCall::date_cmd},
+	    { "uname",  CmdCall::uname_cmd},
+	    {"reboot", CmdCall::reboot_cmd},
 	};
 
-	inline void launch(void* input_buf)
-	{
-		using Text_t     = Command_t::Text_t;
-		using RxBufPtr_t = DataType::RxBuffer_t<Macro::RX_BUF_SIZE>*;
+	using SyncRxBuf_t = DataType::SyncRxBuf_t<Macro::RX_BUF_SIZE>;
 
-		static auto parser = [](Text_t str) {
+	void launch(SyncRxBuf_t& rx_buf)
+	{
+		using Text_t = Command_t::Text_t;
+
+		auto parser = [](Text_t str) {
 			for (const auto& cmd: cmds) {
 				if (auto argv = cmd.match(str)) {
 					return cmd.run(argv);
 				}
 			}
-			MOS_MSG("Unknown command '%s'\n", str);
+			MOS_MSG("Unknown command '%s'", str);
 		};
 
 		CmdCall::uname_cmd(nullptr);
 		Task::print_all();
 
-		auto rx_buf = (RxBufPtr_t) input_buf;
-
 		while (true) {
-			// Valid input should end with '\n'
-			if (rx_buf->back() == '\n') {
-				rx_buf->pop();
-				auto rx = rx_buf->c_str();
-				kprintf("> %s\n", rx);
-				parser(rx);
-				rx_buf->clear();
-			}
-			else {
-				Task::delay(5);
-			}
+			rx_buf.wait(); // Sync from ISR
+			rx_buf.pop();  // Parsing begins
+			auto rx = rx_buf.c_str();
+			kprintf("> %s\n", rx);
+			parser(rx);
+			rx_buf.clear(); // Parsing ends
 		}
 	}
 }

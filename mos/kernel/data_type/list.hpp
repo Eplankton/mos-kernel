@@ -20,13 +20,18 @@ namespace MOS::DataType
 	template <typename Fn, typename Ret = void>
 	concept ListIterFn = Invocable<Fn, Ret, const ListNode_t&>;
 
+	template <typename Fn, typename Ret = void>
+	concept ListIterMutFn = Invocable<Fn, Ret, ListNode_t&>;
+
 	template <typename Fn>
 	concept NodeCmpFn = Invocable<Fn, bool, const ListNode_t&, const ListNode_t&>;
 
-	struct ListImpl_t
+	using List_t = struct ListImpl_t
 	{
-		using Node_t    = ListNode_t;
-		using NodePtr_t = Node_t::SelfPtr_t;
+		using Self_t         = ListImpl_t;
+		using Node_t         = ListNode_t;
+		using NodePtr_t      = Node_t*;
+		using ConstNodePtr_t = const Node_t*;
 
 		Node_t head;
 		uint32_t len = 0;
@@ -54,7 +59,7 @@ namespace MOS::DataType
 		}
 
 		MOS_INLINE inline void
-		iter_mut(auto&& fn)
+		iter_mut(ListIterMutFn auto&& fn)
 		{
 			for (auto it = begin();
 			     it != end();
@@ -75,9 +80,11 @@ namespace MOS::DataType
 			return nullptr;
 		}
 
-		MOS_NO_INLINE void // Never inline because of instruction reordering
+		MOS_INLINE void
 		insert(Node_t& node, NodePtr_t pos)
 		{
+			MOS_DSB(); // Avoid reordering
+			MOS_ISB();
 			if (pos == nullptr)
 				return;
 			node.next       = pos;
@@ -87,10 +94,13 @@ namespace MOS::DataType
 			len += 1;
 		}
 
-		MOS_NO_INLINE void // Never inline because of instruction reordering
+		MOS_INLINE void
 		remove(Node_t& node)
 		{
-			NodePtr_t prev = node.prev, next = node.next;
+			MOS_DSB(); // Avoid reordering
+			MOS_ISB();
+			auto prev  = node.prev,
+			     next  = node.next;
 			prev->next = next;
 			next->prev = prev;
 			node.next  = &node;
@@ -112,14 +122,18 @@ namespace MOS::DataType
 		add(Node_t& node) { insert(node, end()); }
 
 		MOS_INLINE inline void
-		send_to(Node_t& node, ListImpl_t& dest)
+		send_to(Node_t& node, Self_t& dest)
 		{
 			remove(node);
 			dest.add(node);
 		}
 
 		MOS_INLINE inline void
-		send_to_in_order(Node_t& node, ListImpl_t& dest, NodeCmpFn auto&& cmp)
+		send_to_in_order(
+		    Node_t& node,
+		    Self_t& dest,
+		    NodeCmpFn auto&& cmp
+		)
 		{
 			remove(node);
 			dest.insert_in_order(node, cmp);
@@ -129,14 +143,6 @@ namespace MOS::DataType
 		re_insert(Node_t& node, NodeCmpFn auto&& cmp)
 		{
 			send_to_in_order(node, *this, cmp);
-		}
-
-		MOS_INLINE inline bool
-		contains(const Node_t& node)
-		{
-			return iter_until([&node](const Node_t& x) {
-				       return &node == &x;
-			       }) != nullptr;
 		}
 	};
 }

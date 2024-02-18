@@ -6,34 +6,45 @@
 
 namespace MOS::Alloc
 {
-	using Page_t     = DataType::Page_t;
-	using PagePolicy = Page_t::Policy;
-	using PageRaw_t  = Page_t::Raw_t;
-	using PageLen_t  = Page_t::Len_t;
+	using Utils::DisIntrGuard_t;
+	using Page_t    = DataType::Page_t;
+	using PageRaw_t = Page_t::Raw_t;
+	using PgSz_t    = Page_t::Size_t;
+
+	using enum Page_t::Policy;
 
 	// Page Allocator
-	template <PagePolicy policy>
-	inline PageRaw_t palloc(PageLen_t pg_sz = 0xFF)
+	inline PageRaw_t // -1(0xFFFFFFFF) as invalid
+	palloc(Page_t::Policy policy, PgSz_t pg_sz = -1)
 	{
-		if constexpr (policy == PagePolicy::POOL) {
-			using KernelGlobal::page_pool;
+		DisIntrGuard_t guard;
+		switch (policy) {
+			case POOL: {
+				using KernelGlobal::page_pool;
 
-			static auto is_used = [](PageRaw_t raw) {
-				const auto tst = (uint32_t*) raw[0];
-				return tst != nullptr && tst != raw;
-			};
+				// Whether a page is unused
+				auto is_unused = [](PageRaw_t raw) {
+					auto ptr = (void*) raw[0]; // ptr = tcb.node.prev
+					return ptr == nullptr ||   // Uninit-> first alloc
+					       ptr == raw;         // Deinit-> tcb.node is self-linked
+				};
 
-			for (auto raw: page_pool) {
-				if (!is_used(raw)) {
-					return raw;
+				for (auto raw: page_pool) {
+					if (is_unused(raw)) {
+						return raw;
+					}
 				}
+
+				return nullptr;
 			}
 
-			return nullptr;
-		}
+			case DYNAMIC: {
+				MOS_ASSERT(pg_sz != -1, "Page Size Error");
+				return new uint32_t[pg_sz];
+			}
 
-		if constexpr (policy == PagePolicy::DYNAMIC) {
-			return new uint32_t[pg_sz];
+			default:
+				return nullptr;
 		}
 	}
 }
